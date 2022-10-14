@@ -2,10 +2,54 @@
 满足条件的结果有N条，随机返回M条，什么场景的需求？
 推荐？
 
+--------------------------------------------TABLESAMPLE 基于整张表---------------------------------------------
+
 1. BERNOULLI,逐条扫描全表，采样返回总记录的N%
 如果采用LIMIT N截取N条返回，效率会提高，但是会发现数据不够随机，基本上集中在数据文件头部的blocks
 
-```
-select ctid, * from tbl TABLESAMPLE BERNOULLI (1) limit 10;
-```
+缺点：采样的随机性不高，基本上是前边的数据块开始进行的采样
 
+select ctid, * from tbl TABLESAMPLE BERNOULLI (1) limit 10;
+
+2. SYSTEM, 逐BLOCKS扫描全表，采样返回Block总数的N%,效率比BERNOULLI高很多，但是每个被采样的block里面的所有记录都会被返回，
+如果采用limit N截取N条返回，你会发现数据不够随机，每个被采样的block里面的所有记录都会被返回。
+（随机采样数据块，然后返回该数据块的所有数据）
+
+select ctid,* from tbl TABLESAMPLE system(5) limit 10;
+
+3. SYSTEM + random 概率过滤，解决system返回的记录不够离散的问题。
+性能也能接受，越大的表，性能越是突出。
+离散度取决于random概率条件，返回的结果就非常离散了。
+
+select ctid,* from tbl TABLESAMPLE system(5) where random()<0.01 limit 10
+
+4. 除了内置的采样方法，PG还支持扩展采样方法，例如按时间采样，随机扫描并且只扫描指定的时间，例如做多扫描1毫秒，返回这1毫秒扫描到的记录。
+
+-- 最多5毫秒
+select ctid,* from tbl TABLESAMPLE system_time(5) where random()<0.02 limit 10;
+
+-- 最多1000行
+select ctid,* from tbl TABLESAMPLE system_rows(1000) where random()<0.01;
+
+
+--------------------------------------------有索引过滤条件，并且满足条件的记录占比很少--------------------------------------------------------
+1000万行，满足条件1万行，用随机采样可能要扫描很多个block才能拿到精准的数据
+方法1， 传统的order by random()
+
+create table t (id int primary key, c1 int, info text, crt_time timestamp);
+insert into t select generate_series(1,10000),random()*999,md5(random()::text),clock_timestamp();
+create index idx_t_1 on t(c1);
+
+select * from t where c1=0 order by random() limit 10;
+
+方法2， 用索引得到满足条件的blocks（这一步最耗时），从这些blocks中得到随机的10个block,从这10个blocks的所有记录中随机返回10条
+
+select t.* from t where exists
+ ( select 1 from 
+    (select blkid from (select substring(ctid::text,'(\d*),' blkid from t where c1=0 group by 1) t
+        order by random() limit 10) t1  --获取10个随机block id
+     where t.ctid>=('('||t1.blkid||',0)')::tid
+     and t.ctid < ('('||t1.blkid::int+1||',0)')::tid --获取这10个block的所有记录
+     and t.c1=0 ) --过滤出c1=0的
+     order by random()
+     limit 10; --返回10条
