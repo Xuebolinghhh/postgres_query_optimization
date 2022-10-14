@@ -1,0 +1,11 @@
+## 背景
+满足条件的结果有N条，随机返回M条，什么场景的需求？
+推荐？
+
+1. BERNOULLI,逐条扫描全表，采样返回总记录的N%
+如果采用LIMIT N截取N条返回，效率会提高，但是会发现数据不够随机，基本上集中在数据文件头部的blocks
+
+```
+select ctid, * from tbl TABLESAMPLE BERNOULLI (1) limit 10;
+```
+
